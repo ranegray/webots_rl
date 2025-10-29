@@ -1,37 +1,5 @@
 """racer_main controller."""
 
-# You may need to import some classes of the controller module. Ex:
-#  from controller import Robot, Motor, DistanceSensor
-# from controller import Robot
-
-# create the Robot instance.
-# robot = Robot()
-
-# get the time step of the current world.
-# timestep = int(robot.getBasicTimeStep())
-
-# You should insert a getDevice-like function in order to get the
-# instance of a device of the robot. Something like:
-#  motor = robot.getDevice('motorname')
-#  ds = robot.getDevice('dsname')
-#  ds.enable(timestep)
-
-# Main loop:
-# - perform simulation steps until Webots is stopping the controller
-# while robot.step(timestep) != -1:
-# Read the sensors:
-# Enter here functions to read sensor data, like:
-#  val = ds.getValue()
-
-# Process sensor data here.
-
-# Enter here functions to send actuator commands, like:
-#  motor.setPosition(10.0)
-# pass
-
-# Enter here exit cleanup code.
-
-### Q-learning racer controller ###
 import random
 import math
 from controller import Robot
@@ -80,7 +48,6 @@ ACTIONS = ["HARD_LEFT", "SOFT_LEFT", "STRAIGHT_FAST", "SOFT_RIGHT", "HARD_RIGHT"
 alpha = 0.1  # learning rate
 gamma = 0.95  # discount
 epsilon = 0.2  # exploration rate during training
-TIME_STEP_MS = 32
 MAX_STEPS_PER_EPISODE = 1000  # safety cap
 
 # Q-table: dict with keys (state_tuple, action_str)
@@ -337,7 +304,7 @@ while robot.step(timestep) != -1:
     psValues = []
     for i in range(8):
         psValues.append(ps[i].getValue())
-    action = choose_action((0,0), Q, 1.0)
+    action = choose_action((0,0), Q, epsilon)
     print(action)
     apply_action_and_step(action)
 
