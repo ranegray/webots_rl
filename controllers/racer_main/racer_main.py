@@ -34,6 +34,45 @@
 ### Q-learning racer controller ###
 import random
 import math
+from controller import Robot
+from controller import Supervisor
+from controller import GPS
+
+
+robot = Supervisor()
+timestep = int(robot.getBasicTimeStep())
+delta_t = timestep / 1000.0
+
+epuck_node = robot.getFromDef('e-puck')
+print(epuck_node)
+epuck_translation = epuck_node.getField('translation')
+epuck_rotation = epuck_node.getField('rotation')
+
+ps = []
+psNames = [
+    'ps0', 'ps1', 'ps2', 'ps3',
+    'ps4', 'ps5', 'ps6', 'ps7'
+]
+
+for i in range(8):
+    ps.append(robot.getDevice(psNames[i]))
+    ps[i].enable(timestep)
+
+left_motor = robot.getDevice('left wheel motor')
+right_motor = robot.getDevice('right wheel motor')
+left_motor.setPosition(float('inf'))
+right_motor.setPosition(float('inf'))
+left_motor.setVelocity(6.28)
+right_motor.setVelocity(6.28)
+
+gps = robot.getDevice('gps')
+compass = robot.getDevice('compass')
+gps.enable(timestep)
+compass.enable(timestep)
+
+initial_translation = [0,0,0]
+initial_rotation = [0,0,1.5708]
+
 
 ACTIONS = ["HARD_LEFT", "SOFT_LEFT", "STRAIGHT_FAST", "SOFT_RIGHT", "HARD_RIGHT"]
 
@@ -58,6 +97,8 @@ def reset_robot_to_start():
     # TODO: call Supervisor API if you’re using Supervisor controller,
     # or manually set position if allowed.
     # Then read sensors once and build state.
+    epuck_translation.setSFVec3f(initial_translation)
+    epuck_translation.setSFVec3f(initial_rotation)
     raw_obs = read_sensors_and_pose()
     s = discretize_state(raw_obs)
     return s
@@ -97,9 +138,8 @@ def set_wheel_speeds_for_action(action):
     else:
         left, right = 0.0, 0.0
 
-    # TODO: actually command the motors through Webots API here
-    # left_motor.setVelocity(left)
-    # right_motor.setVelocity(right)
+    left_motor.setVelocity(left)
+    right_motor.setVelocity(right)
 
 
 def apply_action_and_step(action):
@@ -112,12 +152,10 @@ def apply_action_and_step(action):
     set_wheel_speeds_for_action(action)
 
     # advance simulation one step
-    # robot.step(TIME_STEP_MS)
 
     raw_obs = read_sensors_and_pose()
 
-    dt_seconds = TIME_STEP_MS / 1000.0
-    return raw_obs, dt_seconds
+    return raw_obs
 
 
 def read_sensors_and_pose():
@@ -125,6 +163,8 @@ def read_sensors_and_pose():
     Grab IR distances, robot (x,y,theta), maybe linear velocity.
     Return a dict of continuous/raw values.
     """
+
+    
     # TODO:
     # ir_vals = [ir[i].getValue() for i in range(num_ir)]
     # x,y,theta = gps.getValues(), imu.getRollPitchYaw() or supervisor pose
@@ -272,8 +312,6 @@ def run_episode(Q, training=True, epsilon=0.2):
         r, done, event_local = compute_reward(raw_obs, lap_progress, crashed)
         if event_local is not None:
             event = event_local
-
-        # 5. learn
         if training:
             update_q(Q, s, a, r, s_next, alpha, gamma)
 
@@ -293,3 +331,20 @@ def run_episode(Q, training=True, epsilon=0.2):
         "event": event,
         "success": (event == "finish"),
     }
+
+while robot.step(timestep) != -1:
+    # read sensors outputs
+    psValues = []
+    for i in range(8):
+        psValues.append(ps[i].getValue())
+    action = choose_action((0,0), Q, 1.0)
+    print(action)
+    apply_action_and_step(action)
+
+    # detect obstacles
+    #right_obstacle = psValues[0] > 80.0 or psValues[1] > 80.0 or psValues[2] > 80.0
+    obstacle_left = psValues[5] > 100.0
+    obstacle_front = psValues[7] > 80.0
+    obstacle_back = psValues[3] > 80.0
+    # initialize motor speeds at 50% of MAX_SPEED.
+
