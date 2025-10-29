@@ -9,8 +9,8 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 WorldInfo {
 }
 Viewpoint {
-  orientation 0.23500661025610067 0.8500877587413499 -0.4712989450169032 1.1166938956748684
-  position -2.292621052047334 0.34727990553520044 3.539778919935971
+  orientation 0.0925499656807798 0.9742323776052656 -0.2056836850070458 0.9955350860966456
+  position -2.5857307944626244 0.31386443754529025 3.5262569235357764
 }
 TexturedBackground {
 }
@@ -1007,4 +1007,5 @@ Solid {
 }
 DEF e-puck E-puck {
   controller "racer_main"
+  supervisor TRUE
 }
