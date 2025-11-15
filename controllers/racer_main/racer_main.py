@@ -54,7 +54,9 @@ MAX_STEPS_PER_EPISODE = 1000  # safety cap
 Q = {}
 
 # --------------- Helper functions -----------------
-
+# Tuples of translation and angle
+#[(0,0,1.57),(1.12,-1.41,0),(-0.28, -2.31, 1.57), (-1.43, -1.85, 0.85), (-2.6, -1.52, 1.57), (-3.1, -0.75, 0), (-1.55,-0.075, 1.57), (0, 0, 1.57)]
+##
 
 def reset_robot_to_start():
     """
