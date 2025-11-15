@@ -35,16 +35,16 @@ gps.enable(timestep)
 compass.enable(timestep)
 
 # --- Constants & Waypoints ---
-# (x, y, angle) from your list. Note: We treat 'y' as Webots 'z'.
+# (x, y) from your list.
 WAYPOINTS = [
-    (0, 0, 1.57),
-    (1.12, -1.41, 0),
-    (-0.28, -2.31, 1.57),
-    (-1.43, -1.85, 0.85),
-    (-2.6, -1.52, 1.57),
-    (-3.1, -0.75, 0),
-    (-1.55, -0.075, 1.57),
-    (0, 0, 1.57)
+    (-1.6, 0),
+    (0, 0),
+    (1.12, -1.41),
+    (-0.28, -2.31),
+    (-1.43, -1.85),
+    (-2.6, -1.52),
+    (-3.1, -0.75),
+    (-1.6, 0),
 ]
 
 # Pre-calculate segment vectors and lengths for lap progress
@@ -233,7 +233,7 @@ def compute_reward(raw_obs, prev_progress, current_progress, crashed):
     elif progress_delta > 0.5:
         # Backward wrap-around (0.01 -> 0.99)
         # Means we went backwards across start line (Bad!)
-        progress_delta -= 1.0
+        progress_delta -= 1000.0
     
     if progress_delta > 0:
         r += progress_delta * 2000.0 # Scale up progress reward
@@ -270,7 +270,7 @@ def set_wheel_speeds_for_action(action):
     right_motor.setVelocity(r)
 
 def reset_robot_to_start():
-    initial_trans = [0, 0, 0] # x, y(height), z
+    initial_trans = [-1.6, 0, 0] # x, y(height), z
     initial_rot = [0, 0, 1, 0] # Axis-Angle
     
     epuck_translation.setSFVec3f(initial_trans)
