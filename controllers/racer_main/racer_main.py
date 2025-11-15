@@ -73,7 +73,7 @@ ACTIONS = ["HARD_LEFT", "SOFT_LEFT", "STRAIGHT_FAST", "SOFT_RIGHT", "HARD_RIGHT"
 alpha = 0.1
 gamma = 0.95
 epsilon = 0.2
-MAX_STEPS_PER_EPISODE = 1000
+MAX_STEPS_PER_EPISODE = 10000
 
 Q = {}
 
@@ -218,18 +218,25 @@ def check_crash(raw_obs):
     return False
 
 def compute_reward(raw_obs, prev_progress, current_progress, crashed):
-    r = -0.1 # Living penalty
+    r = -0.01 # Living penalty
     
     if crashed:
-        return -100.0, True, "crash"
+        return -1000.0, True, "crash"
         
     # Reward for moving forward along track
     progress_delta = current_progress - prev_progress
-    # Handle lap wrap-around (0.99 -> 0.01)
-    if progress_delta < -0.5: progress_delta += 1.0
+
+    if progress_delta < -0.5: 
+            # Forward wrap-around (0.99 -> 0.01)
+            # Means we finished a lap (Good!)
+            progress_delta += 1.0
+    elif progress_delta > 0.5:
+        # Backward wrap-around (0.01 -> 0.99)
+        # Means we went backwards across start line (Bad!)
+        progress_delta -= 1.0
     
     if progress_delta > 0:
-        r += progress_delta * 1000.0 # Scale up progress reward
+        r += progress_delta * 2000.0 # Scale up progress reward
         
     done = False
     event = None
@@ -326,7 +333,7 @@ def run_episode(training=True, eps=0.1):
 
 # --- Main Loop ---
 if __name__ == "__main__":
-    episodes = 500
+    episodes = 3000
     print("Starting Training...")
     for e in range(episodes):
         rew, steps = run_episode(training=True, eps=epsilon)
