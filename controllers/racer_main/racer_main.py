@@ -4,316 +4,334 @@ import random
 import math
 from controller import Robot
 from controller import Supervisor
-from controller import GPS
 
-
+# --- Setup ---
 robot = Supervisor()
 timestep = int(robot.getBasicTimeStep())
-delta_t = timestep / 1000.0
 
 epuck_node = robot.getFromDef('e-puck')
-print(epuck_node)
 epuck_translation = epuck_node.getField('translation')
 epuck_rotation = epuck_node.getField('rotation')
 
+# Sensors
 ps = []
-psNames = [
-    'ps0', 'ps1', 'ps2', 'ps3',
-    'ps4', 'ps5', 'ps6', 'ps7'
-]
-
+psNames = ['ps0', 'ps1', 'ps2', 'ps3', 'ps4', 'ps5', 'ps6', 'ps7']
 for i in range(8):
     ps.append(robot.getDevice(psNames[i]))
     ps[i].enable(timestep)
 
+# Motors
 left_motor = robot.getDevice('left wheel motor')
 right_motor = robot.getDevice('right wheel motor')
 left_motor.setPosition(float('inf'))
 right_motor.setPosition(float('inf'))
-left_motor.setVelocity(6.28)
-right_motor.setVelocity(6.28)
+left_motor.setVelocity(0.0)
+right_motor.setVelocity(0.0)
 
+# GPS & Compass
 gps = robot.getDevice('gps')
 compass = robot.getDevice('compass')
 gps.enable(timestep)
 compass.enable(timestep)
 
-initial_translation = [0,0,0]
-initial_rotation = [0,0,1.5708]
+# --- Constants & Waypoints ---
+# (x, y, angle) from your list. Note: We treat 'y' as Webots 'z'.
+WAYPOINTS = [
+    (0, 0, 1.57),
+    (1.12, -1.41, 0),
+    (-0.28, -2.31, 1.57),
+    (-1.43, -1.85, 0.85),
+    (-2.6, -1.52, 1.57),
+    (-3.1, -0.75, 0),
+    (-1.55, -0.075, 1.57),
+    (0, 0, 1.57)
+]
 
+# Pre-calculate segment vectors and lengths for lap progress
+SEGMENTS = []
+TOTAL_TRACK_LENGTH = 0.0
+for i in range(len(WAYPOINTS) - 1):
+    p1 = WAYPOINTS[i]
+    p2 = WAYPOINTS[i+1]
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    length = math.sqrt(dx*dx + dy*dy)
+    # Calculate segment angle (tangent)
+    angle = math.atan2(dy, dx)
+    SEGMENTS.append({
+        'p1': p1,
+        'p2': p2,
+        'length': length,
+        'angle': angle,
+        'start_dist': TOTAL_TRACK_LENGTH
+    })
+    TOTAL_TRACK_LENGTH += length
 
 ACTIONS = ["HARD_LEFT", "SOFT_LEFT", "STRAIGHT_FAST", "SOFT_RIGHT", "HARD_RIGHT"]
 
-# Hyperparams
-alpha = 0.1  # learning rate
-gamma = 0.95  # discount
-epsilon = 0.2  # exploration rate during training
-MAX_STEPS_PER_EPISODE = 1000  # safety cap
+# RL Hyperparameters
+alpha = 0.1
+gamma = 0.95
+epsilon = 0.2
+MAX_STEPS_PER_EPISODE = 1000
 
-# Q-table: dict with keys (state_tuple, action_str)
 Q = {}
 
-# --------------- Helper functions -----------------
-# Tuples of translation and angle
-#[(0,0,1.57),(1.12,-1.41,0),(-0.28, -2.31, 1.57), (-1.43, -1.85, 0.85), (-2.6, -1.52, 1.57), (-3.1, -0.75, 0), (-1.55,-0.075, 1.57), (0, 0, 1.57)]
-##
+# --- Helper Functions ---
 
-def reset_robot_to_start():
-    """
-    Reset pose to (x0,y0,theta0), reset wheel speeds to 0, etc.
-    Return the *discretized* initial state.
-    """
-    # TODO: call Supervisor API if you’re using Supervisor controller,
-    # or manually set position if allowed.
-    # Then read sensors once and build state.
-    epuck_translation.setSFVec3f(initial_translation)
-    epuck_translation.setSFVec3f(initial_rotation)
-    raw_obs = read_sensors_and_pose()
-    s = discretize_state(raw_obs)
-    return s
-
-
-def choose_action(state, Q, epsilon):
-    if random.random() < epsilon:
-        # explore
-        return random.choice(ACTIONS)
-    else:
-        # exploit best known action
-        best_a = None
-        best_q = -1e9
-        for a in ACTIONS:
-            q = Q.get((state, a), 0.0)
-            if q > best_q:
-                best_q = q
-                best_a = a
-        return best_a
-
-
-def set_wheel_speeds_for_action(action):
-    """
-    Map each discrete action to left/right wheel speeds (rad/s).
-    Tune these.
-    """
-    if action == "HARD_LEFT":
-        left, right = 1.0, 5.0
-    elif action == "SOFT_LEFT":
-        left, right = 3.0, 5.0
-    elif action == "STRAIGHT_FAST":
-        left, right = 5.0, 5.0
-    elif action == "SOFT_RIGHT":
-        left, right = 5.0, 3.0
-    elif action == "HARD_RIGHT":
-        left, right = 5.0, 1.0
-    else:
-        left, right = 0.0, 0.0
-
-    left_motor.setVelocity(left)
-    right_motor.setVelocity(right)
-
-
-def apply_action_and_step(action):
-    """
-    1. Send wheel speeds.
-    2. Step Webots forward exactly one control tick.
-    3. Read sensors.
-    Returns (raw_obs, dt_seconds).
-    """
-    set_wheel_speeds_for_action(action)
-
-    # advance simulation one step
-
-    raw_obs = read_sensors_and_pose()
-
-    return raw_obs
-
+def normalize_angle(angle):
+    """Wraps angle to -pi..pi"""
+    while angle > math.pi: angle -= 2*math.pi
+    while angle < -math.pi: angle += 2*math.pi
+    return angle
 
 def read_sensors_and_pose():
     """
-    Grab IR distances, robot (x,y,theta), maybe linear velocity.
-    Return a dict of continuous/raw values.
+    Returns raw observation: IR values, position (x,z), and heading.
     """
-
+    ir_vals = [s.getValue() for s in ps]
     
-    # TODO:
-    # ir_vals = [ir[i].getValue() for i in range(num_ir)]
-    # x,y,theta = gps.getValues(), imu.getRollPitchYaw() or supervisor pose
-    # return { "ir": ir_vals, "x": x, "y": y, "theta": theta }
-    return {}
+    pos = gps.getValues()
+    # Webots coordinates: x is x, z is y (depth)
+    x = pos[0]
+    z = pos[2] 
 
+    mag = compass.getValues()
+    # Heading in Webots (usually relative to North/X-axis depending on setup)
+    # atan2(x, z) matches Webots North usually
+    theta = math.atan2(mag[0], mag[2])
+    
+    return { "ir": ir_vals, "x": x, "y": z, "theta": theta }
 
-def discretize_state(raw_obs):
-    """
-    Turn raw_obs into a small tuple.
-    Example buckets:
-      - heading_bucket: {-2,-1,0,1,2}
-      - left/front/right close: {0,1,2}
-      - segment_id: {0..N-1}
-    """
-    heading_err = heading_error_bucket(raw_obs)
-    left_close = proximity_bucket(raw_obs, sensor="left")
-    front_close = proximity_bucket(raw_obs, sensor="front")
-    right_close = proximity_bucket(raw_obs, sensor="right")
-    segment_id = which_track_segment(raw_obs)
+def get_closest_segment_index(x, y):
+    """Finds which track segment (0..N) the robot is closest to."""
+    best_idx = 0
+    min_dist = float('inf')
+    
+    for i, seg in enumerate(SEGMENTS):
+        p1 = seg['p1']
+        p2 = seg['p2']
+        
+        # Project point onto line segment
+        px = p2[0] - p1[0]
+        py = p2[1] - p1[1]
+        norm = px*px + py*py
+        if norm == 0: continue
+        
+        u = ((x - p1[0]) * px + (y - p1[1]) * py) / float(norm)
+        
+        # Clamp u to segment bounds
+        u = max(0, min(1, u))
+        
+        # Closest point on segment
+        cx = p1[0] + u * px
+        cy = p1[1] + u * py
+        
+        dist = math.sqrt((x-cx)**2 + (y-cy)**2)
+        
+        if dist < min_dist:
+            min_dist = dist
+            best_idx = i
+            
+    return best_idx
 
-    return (heading_err, left_close, front_close, right_close, segment_id)
-
+def which_track_segment(raw_obs):
+    return get_closest_segment_index(raw_obs['x'], raw_obs['y'])
 
 def heading_error_bucket(raw_obs):
     """
-    Compare robot heading to local tangent of track.
-    Return -2,-1,0,1,2.
+    Compare robot heading to the 'ideal' heading of the current track segment.
     """
-    # TODO: compute angle diff = wrap(robot_theta - ideal_track_theta)
-    angle_diff = 0.0
-    if angle_diff < -0.6:
-        return -2
-    if angle_diff < -0.2:
-        return -1
-    if angle_diff < 0.2:
-        return 0
-    if angle_diff < 0.6:
-        return 1
+    seg_idx = which_track_segment(raw_obs)
+    target_angle = SEGMENTS[seg_idx]['angle']
+    
+    # Alternatively, interpolate target angle based on position, 
+    # but segment tangent is fine for this resolution.
+    
+    # Note: We might need to offset Webots compass theta 
+    # to match standard math theta (0 = East). 
+    # Assuming read_sensors_and_pose handles coordinate frame standard.
+    
+    # Rotate robot theta by pi/2 if compass North is Z axis 
+    # to match math atan2(dy, dx) logic if needed. 
+    # For now, we use simple difference.
+    
+    diff = normalize_angle(raw_obs['theta'] - target_angle)
+    
+    # Bucket into 5 states: -2 (Far Left), -1, 0 (Good), 1, 2 (Far Right)
+    if diff < -0.6: return -2
+    if diff < -0.2: return -1
+    if diff < 0.2:  return 0
+    if diff < 0.6:  return 1
     return 2
 
-
 def proximity_bucket(raw_obs, sensor="front"):
-    """
-    Take IR sensor reading and bucket it.
-    Example: 0 = clear, 1 = kinda close, 2 = danger close.
-    """
-    # TODO: pick which IR index maps to 'front', 'left', 'right'
-    dist_val = 0.0
-    if dist_val < 0.2:
-        return 2  # dangerously close
-    if dist_val < 0.5:
-        return 1  # kinda close
-    return 0  # clear
+    ir_vals = raw_obs["ir"]
+    # ps7(left-front), ps0(right-front)
+    # ps5(left), ps2(right)
+    val = 0.0
+    if sensor == "front":
+        val = max(ir_vals[0], ir_vals[7])
+    elif sensor == "left":
+        val = ir_vals[5]
+    elif sensor == "right":
+        val = ir_vals[2]
+        
+    # Tuning for e-puck IR sensors
+    if val > 200.0: return 2 # Danger
+    if val > 90.0:  return 1 # Warning
+    return 0 # Clear
 
-
-def which_track_segment(raw_obs):
-    """
-    Based on (x,y), figure out which stretch of track you're on.
-    Helps the agent know progress around the loop.
-    """
-    # TODO: divide the loop path into N segments by angle or by arc length.
-    return 0
-
+def discretize_state(raw_obs):
+    h_err = heading_error_bucket(raw_obs)
+    l_prox = proximity_bucket(raw_obs, "left")
+    f_prox = proximity_bucket(raw_obs, "front")
+    r_prox = proximity_bucket(raw_obs, "right")
+    seg_id = which_track_segment(raw_obs)
+    
+    return (h_err, l_prox, f_prox, r_prox, seg_id)
 
 def get_lap_progress(raw_obs):
-    """
-    Returns a float 0.0 -> 1.0 estimating % of lap completed.
-    Could be based on projection of (x,y) onto centerline spline.
-    """
-    # TODO
-    return 0.0
-
+    """Returns 0.0 -> 1.0 (or >1.0 if multiple laps)"""
+    x, y = raw_obs['x'], raw_obs['y']
+    idx = get_closest_segment_index(x, y)
+    seg = SEGMENTS[idx]
+    
+    # Project onto current segment to get local progress
+    px = seg['p2'][0] - seg['p1'][0]
+    py = seg['p2'][1] - seg['p1'][1]
+    norm = px*px + py*py
+    u = 0.0
+    if norm > 0:
+        u = ((x - seg['p1'][0]) * px + (y - seg['p1'][1]) * py) / float(norm)
+        u = max(0, min(1, u))
+        
+    current_dist = seg['start_dist'] + (u * seg['length'])
+    progress = current_dist / TOTAL_TRACK_LENGTH
+    
+    return progress
 
 def check_crash(raw_obs):
-    """
-    True if we hit wall / went off track.
-    Simple version: robot's |x,y| is outside track bounds,
-    OR any proximity sensor is "danger close" for multiple consecutive steps.
-    """
-    # TODO
+    # Threshold ~1000 implies very close to wall
+    if any(v > 1000.0 for v in raw_obs["ir"]):
+        return True
     return False
 
-
-def compute_reward(raw_obs, lap_progress, crashed):
-    """
-    Shaping:
-    -1 each step (time penalty)
-    -100 if crash
-    +1000 if lap_progress >= 1.0 (finished)
-    """
-    # base time penalty
-    r = -1.0
+def compute_reward(raw_obs, prev_progress, current_progress, crashed):
+    r = -0.1 # Living penalty
+    
+    if crashed:
+        return -100.0, True, "crash"
+        
+    # Reward for moving forward along track
+    progress_delta = current_progress - prev_progress
+    # Handle lap wrap-around (0.99 -> 0.01)
+    if progress_delta < -0.5: progress_delta += 1.0
+    
+    if progress_delta > 0:
+        r += progress_delta * 1000.0 # Scale up progress reward
+        
     done = False
     event = None
-
-    if crashed:
-        r += -100.0
-        done = True
-        event = "crash"
-
-    if lap_progress >= 1.0:
-        r += 1000.0
-        done = True
-        event = "finish"
+    
+    # If we completed a lap (simplified check)
+    # Real logic would track 'laps_completed' counter
+    if current_progress > 0.98:
+         # r += 100.0
+         pass 
 
     return r, done, event
 
+def set_wheel_speeds_for_action(action):
+    # Base speed
+    spd = 6.28
+    
+    if action == "HARD_LEFT":
+        l, r = 0.2*spd, 0.8*spd
+    elif action == "SOFT_LEFT":
+        l, r = 0.6*spd, 1.0*spd
+    elif action == "STRAIGHT_FAST":
+        l, r = 1.0*spd, 1.0*spd
+    elif action == "SOFT_RIGHT":
+        l, r = 1.0*spd, 0.6*spd
+    elif action == "HARD_RIGHT":
+        l, r = 0.8*spd, 0.2*spd
+    else:
+        l, r = 0.0, 0.0
 
-def update_q(Q, s, a, r, s_next, alpha, gamma):
+    left_motor.setVelocity(l)
+    right_motor.setVelocity(r)
+
+def reset_robot_to_start():
+    initial_trans = [0, 0, 0] # x, y(height), z
+    initial_rot = [0, 0, 1, 0] # Axis-Angle
+    
+    epuck_translation.setSFVec3f(initial_trans)
+    epuck_rotation.setSFRotation(initial_rot)
+    epuck_node.resetPhysics()
+    
+    left_motor.setVelocity(0)
+    right_motor.setVelocity(0)
+    robot.step(timestep)
+    
+    raw_obs = read_sensors_and_pose()
+    return discretize_state(raw_obs), get_lap_progress(raw_obs)
+
+def choose_action(state, Q, eps):
+    if random.random() < eps:
+        return random.choice(ACTIONS)
+    # Greedy
+    best = ACTIONS[0]
+    max_q = -1e9
+    for a in ACTIONS:
+        q = Q.get((state, a), 0.0)
+        if q > max_q:
+            max_q = q
+            best = a
+    return best
+
+def update_q(s, a, r, s_next):
     old_q = Q.get((s, a), 0.0)
-    max_next = max(Q.get((s_next, a2), 0.0) for a2 in ACTIONS)
-    td_target = r + gamma * max_next
-    td_error = td_target - old_q
-    Q[(s, a)] = old_q + alpha * td_error
+    next_max = max([Q.get((s_next, a2), 0.0) for a2 in ACTIONS])
+    Q[(s, a)] = old_q + alpha * (r + gamma * next_max - old_q)
 
-
-# --------------- Episode loop -----------------
-
-
-def run_episode(Q, training=True, epsilon=0.2):
-    s = reset_robot_to_start()
+def run_episode(training=True, eps=0.1):
+    state, progress = reset_robot_to_start()
     done = False
-
-    total_reward = 0.0
-    elapsed_time = 0.0
     steps = 0
-    event = None
-
-    while not done:
-        # 1. pick action
-        a = choose_action(s, Q, epsilon if training else 0.0)
-
-        # 2. apply
-        raw_obs, dt = apply_action_and_step(a)
-        elapsed_time += dt
-        steps += 1
-
-        # 3. observe next state
-        s_next = discretize_state(raw_obs)
-
-        # 4. figure out what happened
-        lap_progress = get_lap_progress(raw_obs)
+    total_reward = 0
+    
+    while not done and steps < MAX_STEPS_PER_EPISODE:
+        action = choose_action(state, Q, eps if training else 0.0)
+        
+        set_wheel_speeds_for_action(action)
+        robot.step(timestep)
+        
+        raw_obs = read_sensors_and_pose()
+        next_state = discretize_state(raw_obs)
+        next_progress = get_lap_progress(raw_obs)
         crashed = check_crash(raw_obs)
-        r, done, event_local = compute_reward(raw_obs, lap_progress, crashed)
-        if event_local is not None:
-            event = event_local
+        
+        reward, done, event = compute_reward(raw_obs, progress, next_progress, crashed)
+        
         if training:
-            update_q(Q, s, a, r, s_next, alpha, gamma)
+            update_q(state, action, reward, next_state)
+            
+        state = next_state
+        progress = next_progress
+        total_reward += reward
+        steps += 1
+        
+    return total_reward, steps
 
-        total_reward += r
-        s = s_next
-
-        # 6. timeout safety
-        if steps >= MAX_STEPS_PER_EPISODE and not done:
-            done = True
-            event = "timeout"
-
-    # Package episode metrics
-    return {
-        "total_reward": total_reward,
-        "elapsed_time": elapsed_time,
-        "steps": steps,
-        "event": event,
-        "success": (event == "finish"),
-    }
-
-while robot.step(timestep) != -1:
-    # read sensors outputs
-    psValues = []
-    for i in range(8):
-        psValues.append(ps[i].getValue())
-    action = choose_action((0,0), Q, epsilon)
-    print(action)
-    apply_action_and_step(action)
-
-    # detect obstacles
-    #right_obstacle = psValues[0] > 80.0 or psValues[1] > 80.0 or psValues[2] > 80.0
-    obstacle_left = psValues[5] > 100.0
-    obstacle_front = psValues[7] > 80.0
-    obstacle_back = psValues[3] > 80.0
-    # initialize motor speeds at 50% of MAX_SPEED.
-
+# --- Main Loop ---
+if __name__ == "__main__":
+    episodes = 500
+    print("Starting Training...")
+    for e in range(episodes):
+        rew, steps = run_episode(training=True, eps=epsilon)
+        print(f"Episode {e}: Reward={rew:.2f}, Steps={steps}")
+        
+        # Decay epsilon
+        if epsilon > 0.05:
+            epsilon *= 0.99
