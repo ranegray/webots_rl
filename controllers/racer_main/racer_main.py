@@ -38,22 +38,17 @@ compass = robot.getDevice('compass')
 gps.enable(timestep)
 compass.enable(timestep)
 
-# --- Constants & Actions ---
+# Actions
 ACTIONS = ["HARD_LEFT", "SOFT_LEFT", "STRAIGHT_FAST", "SOFT_RIGHT", "HARD_RIGHT"]
 
 # RL Hyperparameters
 alpha = 0.1
 gamma = 0.95
-# --- CRITICAL CHANGE 1 ---
-# Start with 100% exploration to force the agent to try "STRAIGHT_FAST"
-# and overcome its initial "fear" of crashing.
 epsilon = 1.0 
-# ---
-MAX_STEPS_PER_EPISODE = 5000 # Give it more time per episode
+MAX_STEPS_PER_EPISODE = 5000
 
 Q = {}
 
-# --- Helper Functions ---
 
 def read_sensors_and_pose():
     ir_vals = [s.getValue() for s in ps]
@@ -72,7 +67,7 @@ def bucket_sensor_val(val):
 def discretize_state(raw_obs):
     ir_vals = raw_obs["ir"]
     
-    # Bucket 6 key sensors individually (ignoring the two rear-facing ps3, ps4)
+    # Buckets for each sensor
     # ps0: front-right
     # ps1: side-right (front)
     # ps2: side-right (back)
@@ -87,44 +82,28 @@ def discretize_state(raw_obs):
     b6 = bucket_sensor_val(ir_vals[6])
     b7 = bucket_sensor_val(ir_vals[7])
     
-    # The new state is a 6-part tuple
     return (b0, b1, b2, b5, b6, b7)
 
-# --- CRITICAL CHANGE 2 --- (UPDATED FOR 6-SENSOR STATE)
-# The reward now ALSO depends on the action taken.
-# This lets us directly reward/punish actions in a given state.
 def compute_reward(state, action):
-    # NEW: Unpack the 6-tuple state
     (b0, b1, b2, b5, b6, b7) = state
 
-    # 1. Crash is always the worst. (Terminal)
-    # Check if ANY sensor bucket is 2 (Danger)
     if b0 == 2 or b1 == 2 or b2 == 2 or b5 == 2 or b6 == 2 or b7 == 2:
          return -100.0, True, "crash"
          
-    # 2. Front proximity is very bad.
-    # (b7 is front-left, b0 is front-right)
     if b7 == 1 or b0 == 1:
         return -5.0, False, "too close front"
         
-    # 3. Side proximity is also bad (punishes wall-scraping)
-    # (b6, b5 are left side; b1, b2 are right side)
     if b1 == 1 or b2 == 1 or b5 == 1 or b6 == 1:
         return -2.0, False, "too close side"
 
-    # 4. We are in the "Golden State" (0, 0, 0, 0, 0, 0)
     if state == (0, 0, 0, 0, 0, 0):
-        # ...and we are driving straight! This is the BEST behavior.
         if action == "STRAIGHT_FAST":
             return +2.0, False, "clear and fast"
-        # ...and we are turning gently. This is OK.
         elif action == "SOFT_LEFT" or action == "SOFT_RIGHT":
             return +0.5, False, "clear and turning"
-        # ...and we are spinning. Punish this directly.
-        else: # HARD_LEFT or HARD_RIGHT
+        else:
             return -1.0, False, "spinning in clear"
 
-    # 5. Fallback for other states (e.g., trying to drive straight into a side wall)
     return -0.5, False, "generic bad state"
 
 def set_wheel_speeds_for_action(action):
@@ -138,7 +117,7 @@ def set_wheel_speeds_for_action(action):
     left_motor.setVelocity(l)
     right_motor.setVelocity(r)
 
-def reset_robot_to_start():
+def reset_robot_to_start(): #Resets robot in world to do another episode after termination or time out
     initial_trans = [-1.6, 0, 0]
     initial_rot = [0, 0, 1, 0]
     epuck_translation.setSFVec3f(initial_trans)
@@ -150,7 +129,7 @@ def reset_robot_to_start():
     raw_obs = read_sensors_and_pose()
     return discretize_state(raw_obs)
 
-def choose_action(state, Q, eps):
+def choose_action(state, Q, eps): #selects an action factoring in the current epsilon
     if random.random() < eps:
         return random.choice(ACTIONS)
     best = ACTIONS[0]
@@ -162,12 +141,12 @@ def choose_action(state, Q, eps):
             best = a
     return best
 
-def update_q(s, a, r, s_next):
+def update_q(s, a, r, s_next): # updates q table
     old_q = Q.get((s, a), 0.0)
     next_max = max([Q.get((s_next, a2), 0.0) for a2 in ACTIONS])
     Q[(s, a)] = old_q + alpha * (r + gamma * next_max - old_q)
 
-def run_episode(training=True, eps=0.1):
+def run_episode(training=True, eps=0.1): #resets for another episode
     state = reset_robot_to_start()
     done = False
     steps = 0
@@ -185,7 +164,6 @@ def run_episode(training=True, eps=0.1):
         raw_obs = read_sensors_and_pose()
         next_state = discretize_state(raw_obs)
         
-        # Pass BOTH state and action to compute reward
         reward, done, event = compute_reward(next_state, action)
         
         if training:
@@ -199,12 +177,10 @@ def run_episode(training=True, eps=0.1):
 
 if __name__ == "__main__":
     
-    # --- NEW: Add a filename and a flag to control training ---
     Q_TABLE_FILENAME = "q_table.pkl"
     DO_TRAINING = True  # <-- SET TO False TO SKIP TRAINING AND JUST EVALUATE
-    # ---------------------------------------------------------
 
-    # --- NEW: Load Q-Table if it exists ---
+    #Loading Q-Table to play eval
     if os.path.exists(Q_TABLE_FILENAME):
         print(f"Loading existing Q-Table from {Q_TABLE_FILENAME}...")
         with open(Q_TABLE_FILENAME, "rb") as f:
@@ -212,25 +188,22 @@ if __name__ == "__main__":
         print(f"Loaded {len(Q)} entries.")
     else:
         print("No Q-Table found, starting fresh.")
-        # Q is already defined as {} at the top, but good to be explicit
-    # ---------------------------------------
 
     if DO_TRAINING:
         episodes = 10000 
         print(f"Starting Training (v3) for {episodes} episodes...")
         
-        for e in range(episodes):
+        for e in range(episodes): 
             rew, steps = run_episode(training=True, eps=epsilon)
             
-            if e % 50 == 0: # Print every 50 episodes
+            if e % 50 == 0:
                 print(f"Episode {e}: Reward={rew:.2f}, Steps={steps}, Epsilon={epsilon:.3f}")
             
-            if epsilon > 0.05: # Minimum exploration
+            if epsilon > 0.05: #setting minimum level of exploration at 5%
                 epsilon *= 0.9995 
                 
         print("Training finished.")
 
-        # --- NEW: Save the Q-Table ---
         print(f"Saving Q-Table to {Q_TABLE_FILENAME}...")
         with open(Q_TABLE_FILENAME, "wb") as f:
             pickle.dump(Q, f)
